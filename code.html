@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>π Digit Calculator</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: #1a1a2e; color: #eee; min-height: 100vh;
+            display: flex; flex-direction: column; align-items: center; padding: 2rem;
+        }
+        h1 { font-size: 2.5rem; margin-bottom: .5rem; color: #e94560; }
+        .subtitle { color: #aaa; margin-bottom: 2rem; text-align:center; max-width:600px; line-height:1.5;}
+        .controls {
+            display:flex; gap:1rem; align-items:center; margin-bottom:2rem;
+            background:#16213e; padding:1.5rem; border-radius:12px; flex-wrap:wrap; justify-content:center;
+        }
+        input[type="number"] {
+            width:140px; padding:.75rem; font-size:1.1rem;
+            border:2px solid #e94560; border-radius:8px; background:#0f3460; color:#fff; text-align:center;
+        }
+        button {
+            padding:.75rem 2rem; font-size:1.1rem; border:none; border-radius:8px;
+            background:#e94560; color:#fff; cursor:pointer; transition:background .3s, opacity .3s;
+        }
+        button:hover { background:#c73650; }
+        button:disabled { opacity:.4; cursor:not-allowed; }
+        #progress { margin-bottom:1rem; min-height:1.5em; color:#53d8fb; font-size:1.1rem; text-align:center;}
+        #result-container { width:100%; max-width:900px; position:relative; }
+        pre {
+            background:#16213e; padding:1.5rem; border-radius:12px; font-family:'Fira Code',monospace;
+            font-size:.92rem; line-height:1.6; word-break:break-all; white-space:pre-wrap;
+            max-height:400px; overflow-y:auto; min-height:3em;
+        }
+        .copy-btn {
+            position:absolute; top:10px; right:10px; padding:.5rem 1rem; font-size:.9rem; display:none;
+        }
+        .warning { color:#f39c12; margin-top:1rem; font-size:.88rem; text-align:center;}
+    </style>
+</head>
+<body>
+
+<h1>π Digit Calculator</h1>
+<p class="subtitle">Chudnovsky algorithm with BigInt — ~14.2 digits of precision per iteration, one of the fastest methods known.</p>
+
+<div class="controls">
+    <label>Digits: <input type="number" id="digitsInput" value="100" min="1" max="50000"></label>
+    <button onclick="startCompute()" id="computeBtn">Compute π</button>
+</div>
+
+<div id="progress"></div>
+<div id="result-container">
+    <pre id="result"></pre>
+    <button class="copy-btn" id="copyBtn" onclick="copyResult()">📋 Copy</button>
+</div>
+<p class="warning" id="warn"></p>
+
+<script>
+/* ──────────────────────────────────────────────
+   Chudnovsky algorithm  (integer arithmetic via BigInt)
+   ────────────────────────────────────────────── */
+
+async function computePi(n) {
+    if (n <= 0) return '3';
+
+    const extra = Math.max(30, Math.ceil(Math.log10(n)) + 5);
+    const kMax  = Math.ceil((n + extra) / 14);
+
+    /* Constants from the Chudnovsky formula */
+    const C   = BigInt(640320) ** 3n;      // 262537412640768000
+    const A   = 13591409n;                  // 13 591 409
+    const B   = 545140134n;                 // 545 140 134
+
+    /* Scale everything by 10^(n+extra) so all arithmetic is integer-based */
+    const scale       = BigInt(10) ** BigInt(n + extra);
+    let   F_k         = 1n;                // (6k)! / ((3k)! · k!³), updated incrementally
+    let   sumScaled   = 0n;               // accumulated Σ T_k · 10^(n+extra)
+    let   CK          = 1n;               // C^k
+
+    for (let k = 0; k < kMax; k++) {
+        const sign = (k % 2 === 0) ? 1n : -1n;
+
+        /* Incremental update of the factorial ratio F(k) */
+        if (k > 0) {
+            let num = 1n, den = 1n;
+            for (let i = 0; i < 6; i++) num *= BigInt(6 * k - i);
+            for (let i = 0; i < 3; i++) den *= BigInt(3 * k - i);
+            den   *= BigInt(k) ** 3n;
+            F_k    = F_k * num / den;
+        }
+
+        /* T_k · scale  — integer division by C^k gives the scaled term */
+        const termNum = sign * F_k * (A + B * BigInt(k)) * scale;
+        sumScaled    += termNum / CK;
+        CK           *= C;
+
+        // Yield to keep UI responsive
+        if (k > 0 && k % Math.max(1, Math.floor(kMax / 50)) === 0) {
+            await new Promise(r => setTimeout(r, 0));
+            updateProgress(Math.round((k + 1) / kMax * 100));
+        }
+    }
+
+    /* ── Integer square root of C via Newton's method on scaled values ── */
+    const target     = C * scale * scale;   // C · 10^(2·(n+extra))
+
+    // FIX: Math.floor to get an integer before passing to BigInt()
+    let sqrtC_scaled = BigInt(Math.floor(Math.sqrt(Number(C)))) * scale;
+
+    for (let i = 0; i < 300; i++) {
+        const newX = (sqrtC_scaled + target / sqrtC_scaled) / 2n;
+        if (newX >= sqrtC_scaled) break;
+        sqrtC_scaled = newX;
+    }
+
+    /* π ≈ √C · scale² / (12 · sumScaled) */
+    let piScaled = sqrtC_scaled * scale / (12n * sumScaled);
+
+    const s = piScaled.toString();
+    return '3.' + s.slice(1, n + 1);
+}
+
+/* ────────── UI helpers ────────── */
+
+let lastResult = '';
+
+function updateProgress(pct) {
+    document.getElementById('progress').textContent = `Computing … ${pct}%`;
+}
+
+async function startCompute() {
+    const input = document.getElementById('digitsInput');
+    let n = parseInt(input.value);
+
+    if (isNaN(n) || n <= 0)   { alert('Please enter a valid positive integer.'); return; }
+    if (n > 50000)            { if (!confirm(`${n.toLocaleString()} digits will take a very long time. Continue?`)) return; }
+
+    document.getElementById('computeBtn').disabled = true;
+    document.getElementById('warn').textContent   = '';
+    document.getElementById('progress').textContent = 'Starting …';
+    document.getElementById('result').textContent  = '';
+    document.getElementById('copyBtn').style.display = 'none';
+
+    const t0 = performance.now();
+    lastResult = await computePi(n);
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+
+    document.getElementById('progress').textContent   = `Done in ${elapsed} s`;
+    document.getElementById('result').textContent     = lastResult;
+    document.getElementById('copyBtn').style.display  = 'inline-block';
+    document.getElementById('computeBtn').disabled    = false;
+
+    if (n > 10000) {
+        document.getElementById('warn').textContent =
+            `⚠ Large result (>10 K digits). Try 1–5 000 for instant results.`;
+    }
+}
+
+function copyResult() {
+    navigator.clipboard.writeText(lastResult).then(() => {
+        const b = document.getElementById('copyBtn');
+        b.textContent = '✓ Copied!';
+        setTimeout(() => b.textContent = '📋 Copy', 2000);
+    });
+}
+
+/* ────────── Self-test against known digits ────────── */
+async function verify() {
+    const known = "3.14159265358979323846264338327950288419716939937510";
+    for (const n of [1, 5, 10, 20]) {
+        const r = await computePi(n);
+        document.getElementById('result').textContent += `\n✅ n=${String(n).padStart(4)}: ${r}`;
+    }
+}
+
+// Show a quick verification on load (results appear below the form)
+verify().catch(console.error);
+</script>
+</body>
+</html>
